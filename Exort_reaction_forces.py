@@ -1,8 +1,7 @@
 '''
 Exort all of the reaction forces in the model in the order specified by the 'to_export' variable
 Will export to forces.csv in the user_files folder
-'''
-import os
+'''import os
 
 project = DataModel.Project
 working_dir = ExtAPI.DataModel.AnalysisList[0].WorkingDir
@@ -33,13 +32,13 @@ for model in project.Model.Analyses:
                             #t = rst.Time.ToString()
                             #t = t[:t.find(" ")]
                             x = rst.XAxis.ToString()
-                            x= x[:x.find(" ")]
-                            forces[column_group*3+1] = x
+                            x= float(x[:x.find(" ")])
+                            forces[column_group*3+0] = x
                             y = rst.YAxis.ToString()
-                            y = y[:y.find(" ")]
-                            forces[column_group*3+2] = y
+                            y = float(y[:y.find(" ")])
+                            forces[column_group*3+1] = y
                             z = rst.ZAxis.ToString()
-                            z = z[:z.find(" ")]
+                            z = float(z[:z.find(" ")])
                             forces[column_group*3+2] = z
                             #print("{},{},{},{},{}".format(name,t,x,y,z))
         with open(fname,'a') as f:
