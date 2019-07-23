@@ -1,7 +1,8 @@
 '''
 Exort all of the reaction forces in the model in the order specified by the 'to_export' variable
 Will export to forces.csv in the user_files folder
-'''import os
+'''
+import os
 
 project = DataModel.Project
 working_dir = ExtAPI.DataModel.AnalysisList[0].WorkingDir
