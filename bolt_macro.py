@@ -9,6 +9,7 @@ It requires:
     * Any solver units or user units are allowed. Everything is converted to N mm
     * Do not need to add any command snippets anywhere
     * Beam naming is not required but be set to customize results
+        using format 'M_<grade>_<length in mm>_<name>'
 
 Optional Inputs:
     * Beams can be named 'M_<grade>_<length in mm>_<any name>'
@@ -17,12 +18,13 @@ Optional Inputs:
 
 Assumptions:
     * Steel to Steel connections with steel bolts
-        * Can change stiffness of bolt and clamp material in `BoltResult.__init__()`
-        * Can change joint coefficient of friction in `BoltResult.__init__()`
+        * Can change stiffness of bolt and clamp material in `Bolt.__init__()`
+            This could be extended in the future to be retrieved from model
+        * Can change joint coefficient of friction in `Bolt.__init__()`
+            This could be extended in the future to be retrieved from model
     * Torsion and moment loads on bolts are insignificant
         * No torsion or moment data is used anywhere
         * Pay extra attention to this if the joint slips!
-
 
 Release History:
 v1: 2023-09-01 Neil Dencklau
@@ -140,7 +142,31 @@ def align_force_to_beam(node1, node2, force_global):
 
 
 class Bolt:
+    """Defines a bolt's physical properties
+    Things that are constant for a bolt
+
+    Holds values for:
+        * name: self.name from the beam name in the UI
+        * diameter: self.diameter
+        * grade: self.grade
+        * stiffness: self.stiffness_bolt, self.stiffnes_clamp
+        * coefficent of friction: self.joint_friction_coeff
+        * proof stress: self.proof_stress
+        * yield stress: self.yield_stress
+        * stress area: self.stess_area
+        * ideal clamp load: self.clamp_load
+        * Length (not always): If user specifies length in name it
+            is stored here. Otherwise it must be computed from the results file.
+            The value could be retrieved from the UI if desired.
+    """
+
     def __init__(self, ui_beam):
+        # These values are material dependant!
+        # In the future should probabably determines from the model itself
+        self.joint_friction_coeff = 0.1
+        self.stiffness_bolt = 2.11e5  # Eb, MPa
+        self.stiffness_clamp = 2.05e5  # Ec, MPa
+
         self.ui_beam = ui_beam
         self.diameter = self._get_bolt_size()
         self._parse_name_grade_length()
@@ -149,13 +175,24 @@ class Bolt:
         """Get the nominal bolt diameter [mm] from UI
         Is the UI value converted to mm rounded to nearest full mm
         """
-        d = units.ConvertUnit(
-            self.ui_beam.Radius.Value, 
-            self.ui_beam.Radius.Unit, 
-            "mm"
-        )
-        d = round(2*d)
-        allowed_sizes = [4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20, 24, 30, 36,]
+        d = units.ConvertUnit(self.ui_beam.Radius.Value, self.ui_beam.Radius.Unit, "mm")
+        d = round(2 * d)
+        allowed_sizes = [
+            4,
+            5,
+            6,
+            7,
+            8,
+            10,
+            12,
+            14,
+            16,
+            18,
+            20,
+            24,
+            30,
+            36,
+        ]
         if d not in allowed_sizes:
             raise ValueError(
                 "Unexpected bolt size {}mm. "
@@ -171,7 +208,6 @@ class Bolt:
             name (str): If name starts with 'M_' uses name as:
                 'M_<grade>_<length>_<name>'. Otherwise uses full name from UI
         """
-        # M_088_037_NAME_4
         name_full = self.ui_beam.Name
         if name_full.startswith("M_"):
             name_split = name_full.split("_")
@@ -180,14 +216,14 @@ class Bolt:
                     "Beam named incorrectly. "
                     "Expected format 'M_<grade>_<length>_<name>'"
                 )
-            
+
             grade_str = name_split[1]
             try:
-                if "." in grade_str: # Entered as '_8.8_', '_08.8_'
+                if "." in grade_str:  # Entered as '_8.8_', '_08.8_'
                     grade = float(grade_str)
-                else: # allother cases assume needs to be divided by 10
-                    grade = float(grade_str)/10.0
-            except Exception as e:
+                else:  # allother cases assume needs to be divided by 10
+                    grade = float(grade_str) / 10.0
+            except Exception:
                 raise ValueError(
                     "Could not parse grade, got '{}' "
                     "which could not be parsed into a grade.".format(grade_str)
@@ -202,7 +238,7 @@ class Bolt:
 
             try:
                 self.grip_length = float(name_split[2])
-            except Exception as e:
+            except Exception:
                 raise ValueError(
                     "Could not parse length, got '{}' "
                     "which could not be parsed into a length.".format(name_split[2])
@@ -211,7 +247,7 @@ class Bolt:
             # Build the beam name back up, rejoining any '_'
             # and removing any commas that will mess with csv output
             name = "_".join(name_split[3:])  # Everything after 3'rd '_' is the name
-            name = name.replace(",", "")  
+            name = name.replace(",", "")
             self.name = name
         else:
             self.grade = 8.8
@@ -269,14 +305,13 @@ class Bolt:
 
 
 class BoltResult:
+    """Values for a bolt under load
+    Contains all data about state of a bolt under load
+    """
+
     def __init__(
         self, bolt, analysis, mesh, elemental_nodal_forces, analysis_time_step
     ):
-        # These values are material dependant!
-        self.joint_friction_coeff = 0.1
-        self.stiffness_bolt = 2.11e5  # Eb, MPa
-        self.stiffness_clamp = 2.05e5  # Ec, MPa
-
         self.bolt = bolt
         self.analysis = analysis
         self.solver_data = analysis.Solution.SolverData
@@ -299,7 +334,7 @@ class BoltResult:
             shear_force: Total shear force in N
         """
         self.forces_global = list(
-            elemental_nodal_forces.GetEntityDataById(self.element.Id)
+            self.elemental_nodal_forces.GetEntityDataById(self.element.Id)
         )
         node1_pos = [
             self.nodes[0].X,
@@ -353,7 +388,7 @@ class BoltResult:
 
     def _compute_axial_force(self):
         """Compute the axial load on the beam in [N]
-        Coordinate system for beams is Z axial
+        Coordinate system for beams is Z axial (after it was rotated to be correct)
         When looking at the reference end (node I)
             +Z is 'away' from mobile end (node J)
             This means a +Z on I is away from J
@@ -392,8 +427,10 @@ class BoltResult:
         d3 = d_washer + 0.5774 * self.grip_length  # d3
         d_clamp = (d3 + d_washer) / 2.0  # Dc
         area_clamp = 0.785 * (d_clamp**2 - d_hole**2)  # Ac
-        k_bolt = (self.bolt.area_stress * self.stiffness_bolt) / self.grip_length  # kb
-        k_clamp = (area_clamp * self.stiffness_clamp) / self.grip_length  # kc
+        k_bolt = (
+            self.bolt.area_stress * self.bolt.stiffness_bolt
+        ) / self.grip_length  # kb
+        k_clamp = (area_clamp * self.bolt.stiffness_clamp) / self.grip_length  # kc
 
         k_ratio = k_clamp / k_bolt  # Ratio
 
@@ -404,7 +441,7 @@ class BoltResult:
             self.axial_force, 0
         )  # Fb
 
-        shear_capacity_joint = self.joint_friction_coeff * f_clamp  # Csl, N
+        shear_capacity_joint = self.bolt.joint_friction_coeff * f_clamp  # Csl, N
         shear_capacity_bolt = (
             self.bolt.yield_stress / 1.732
         ) * self.bolt.area_stress  # Csh, N
@@ -493,51 +530,124 @@ class BoltResult:
         return header_csv
 
 
-bolts = []
-ui_beams = ExtAPI.DataModel.Project.Model.Connections.GetChildren[
-    Ansys.ACT.Automation.Mechanical.Connections.Beam
-](True)
-for ui_beam in ui_beams:
-    # Dont try and use any suppressed beams
-    if ui_beam.Suppressed:
-        continue
+def get_bolts_from_ui_beams():
+    """Get list of Bolts based on beams in the UI
+    Returns:
+        list[Bolt]
+    """
+    bolts = []
+    ui_beams = ExtAPI.DataModel.Project.Model.Connections.GetChildren[
+        Ansys.ACT.Automation.Mechanical.Connections.Beam
+    ](True)
+    for ui_beam in ui_beams:
+        # Dont try and use any suppressed beams
+        if ui_beam.Suppressed:
+            continue
 
-    try:
-        bolts.append(Bolt(ui_beam))
-    except Exception as e:
-        print("Failed to make a bolt for '{}'. Got error: {}".format(ui_beam.Name, e))
-        msg = Ansys.Mechanical.Application.Message(
-            "Failed to make a bolt for '{}'. Got error: {}".format(ui_beam.Name, e),
-            MessageSeverityType.Error
+        try:
+            bolts.append(Bolt(ui_beam))
+        except Exception as e:
+            print(
+                "Failed to make a bolt for '{}'. Got error: {}".format(ui_beam.Name, e)
+            )
+            msg = Ansys.Mechanical.Application.Message(
+                "Failed to make a bolt for '{}'. Got error: {}".format(ui_beam.Name, e),
+                MessageSeverityType.Error,
+            )
+            ExtAPI.Application.Messages.Add(msg)
+            continue
+
+    return bolts
+
+
+def process_analsysis(analysis, bolts):
+    """
+    Args:
+        analysis (Ansys.ACT.Automation.Mechanical.Analysis):
+            The analysis to get results from
+            Example of getting input: `analysis = ExtAPI.DataModel.AnalysisList[0]`
+        bolts (list[Bolt]): All bolts to extract loads for
+            Example of getting input: `bolts = get_bolts_from_ui_beams()`
+
+    Returns:
+        list[BoltResults]: 1 BoltResult instance for each bolt/analysis/time_step
+            combination
+    """
+
+    bolt_results_analysis = []
+
+    model = dpf.Model(analysis.ResultFileName)
+    mesh = model.Mesh
+
+    beam_elements = dpf.operators.scoping.on_mesh_property()
+    beam_elements.inputs.property_name.Connect("beam_elements")
+    beam_elements.inputs.mesh.Connect(mesh)
+
+    for step_end_time in analysis.StepsEndTime:
+        # Get the data scoped to the expected time
+        # By default this loads values as 'rotated to global'
+        op_nodal = dpf.operators.result.element_nodal_forces(
+            data_sources=model.DataSources,
+            mesh_scoping=beam_elements.outputs.mesh_scoping,
+            time_scoping=step_end_time,
         )
-        ExtAPI.Application.Messages.Add(msg)
-        continue
+        # Data is returned as list (by time), want the 1st time
+        #   which is the time we just scoped to
+        elemental_nodal_forces = op_nodal.outputs.fields_container.GetData()[0]
+
+        for bolt in bolts:
+            result = BoltResult(
+                bolt=bolt,
+                analysis=analysis,
+                mesh=mesh,
+                elemental_nodal_forces=elemental_nodal_forces,
+                analysis_time_step=step_end_time,
+            )
+            bolt_results_analysis.append(result)
+
+    return bolt_results_analysis
 
 
-bolt_results = []
-for analysis in ExtAPI.DataModel.Project.Model.Analyses:
-    # fmt: off
-    if analysis.Solution.Status!= Ansys.Mechanical.DataModel.Enums.SolutionStatusType.Done:
-        msg = Ansys.Mechanical.Application.Message(
-            "Analysis '{}' is not solved, cannot export bolt forces".format(analysis.Name),
-            MessageSeverityType.Error
-        )
-        ExtAPI.Application.Messages.Add(msg)
-        continue
-    elif analysis.AnalysisSettings.NodalForces != Ansys.Mechanical.DataModel.Enums.OutputControlsNodalForcesType.Yes:
-        msg = Ansys.Mechanical.Application.Message(
-            "Analysis '{}' does not have 'Analysis Settings -> Output Controls -> Nodal Forces' "
-            "turned on, cannot export bolt forces.".format(analysis.Name),
-            MessageSeverityType.Error
-        )
-        ExtAPI.Application.Messages.Add(msg)
-        continue
-    
-    try:
-        model = dpf.Model(analysis.ResultFileName)
-        mesh = model.Mesh
+def save_results(bolt_results, filename):
+    """Write the results to user_files
+    If filename already exists will overwrite it
 
-        if model.ResultInfo.AnalysisType != dpf.enums.AnalysisType.Static:
+    Args:
+        bolt_results (list[BoltResult])
+        filename (str): Path to the file to save all results to
+    """
+    with open(filename, "w") as fp:
+        fp.write(bolt_results[0].result_string_header())
+        fp.write("\n")
+        for item in bolt_results:
+            fp.write(item.result_string())
+            fp.write("\n")
+
+
+def run_bolt_calc_macro():
+    """Run the full bolt calc macro"""
+
+    bolts = get_bolts_from_ui_beams()
+    bolt_results = []
+    for analysis in ExtAPI.DataModel.AnalysisList:
+        # fmt: off
+        # Do error checking on the analysis
+        if analysis.Solution.Status!= Ansys.Mechanical.DataModel.Enums.SolutionStatusType.Done:
+            msg = Ansys.Mechanical.Application.Message(
+                "Analysis '{}' is not solved, cannot export bolt forces".format(analysis.Name),
+                MessageSeverityType.Error
+            )
+            ExtAPI.Application.Messages.Add(msg)
+            continue
+        elif analysis.AnalysisSettings.NodalForces != Ansys.Mechanical.DataModel.Enums.OutputControlsNodalForcesType.Yes:
+            msg = Ansys.Mechanical.Application.Message(
+                "Analysis '{}' does not have 'Analysis Settings -> Output Controls -> Nodal Forces' "
+                "turned on, cannot export bolt forces.".format(analysis.Name),
+                MessageSeverityType.Error
+            )
+            ExtAPI.Application.Messages.Add(msg)
+            continue
+        elif analysis.AnalysisType != Ansys.Mechanical.DataModel.Enums.AnalysisType.Static:
             msg = Ansys.Mechanical.Application.Message(
                 "Analysis '{}' is not 'Static Sturctural, cannot export bolt forces".format(analysis.Name),
                 MessageSeverityType.Error
@@ -546,55 +656,37 @@ for analysis in ExtAPI.DataModel.Project.Model.Analyses:
             continue
         # fmt: on
 
-        beam_elements = dpf.operators.scoping.on_mesh_property()
-        beam_elements.inputs.property_name.Connect("beam_elements")
-        beam_elements.inputs.mesh.Connect(mesh)
-
-        for step_end_time in analysis.StepsEndTime:
-            # Get the data scoped to the expected time
-            op_nodal = dpf.operators.result.element_nodal_forces(
-                data_sources=model.DataSources,
-                mesh_scoping=beam_elements.outputs.mesh_scoping,
-                time_scoping=step_end_time,
+        # Process each analysis handling errors
+        # An error on 1 analysis should not prevent results from other analysis
+        try:
+            bolt_results_analysis = process_analsysis(analysis, bolts)
+            bolt_results.extend(bolt_results_analysis)
+            msg = Ansys.Mechanical.Application.Message(
+                "Extracted '{}' bolt results for "
+                "analysis '{}'".format(len(bolt_results_analysis), analysis.Name),
+                MessageSeverityType.Info,
             )
-            # Data is returned as list (by time), want the 1st time
-            #   which is the time we just scoped to
-            elemental_nodal_forces = op_nodal.outputs.fields_container.GetData()[0]
+            ExtAPI.Application.Messages.Add(msg)
+        except Exception as e:
+            msg = Ansys.Mechanical.Application.Message(
+                "Failed to calculate bolt results for "
+                "analysis '{}': {}".format(analysis.Name, e),
+                MessageSeverityType.Warning,
+            )
+            ExtAPI.Application.Messages.Add(msg)
 
-            for bolt in bolts:
-                result = BoltResult(
-                    bolt=bolt,
-                    analysis=analysis,
-                    mesh=mesh,
-                    elemental_nodal_forces=elemental_nodal_forces,
-                    analysis_time_step=step_end_time,
-                )
-                bolt_results.append(result)
-        
-    except Exception as e:
-        msg = Ansys.Mechanical.Application.Message(
-            "Failed to calculate bolt results for analysis '{}': {}".format(analysis.Name, e),            
-            MessageSeverityType.Info,
-        )
-        ExtAPI.Application.Messages.Add(msg)
-    finally:
-        # Done with this analysis so release all data streams (ie close the files)
-        model.ReleaseStreams()
+    user_files = wbjn.ExecuteCommand(ExtAPI, "returnValue(GetUserFilesDirectory())")
+    output_fname = os.path.join(
+        user_files,
+        "bolt_loads_{}.csv".format(datetime.datetime.now().strftime("%Y%m%dT%H%M%S")),
+    )
+    save_results(bolt_results, output_fname)
 
-user_files = wbjn.ExecuteCommand(ExtAPI, "returnValue(GetUserFilesDirectory())")
-output_fname = os.path.join(
-    user_files,
-    "bolt_loads_{}.csv".format(datetime.datetime.now().strftime("%Y%m%dT%H%M%S")),
-)
-with open(output_fname, "w") as fp:
-    fp.write(bolt_results[0].result_string_header())
-    fp.write("\n")
-    for item in bolt_results:
-        fp.write(item.result_string())
-        fp.write("\n")
+    msg = Ansys.Mechanical.Application.Message(
+        "Exported {} bolt results to {}".format(len(bolt_results), output_fname),
+        MessageSeverityType.Info,
+    )
+    ExtAPI.Application.Messages.Add(msg)
 
-msg = Ansys.Mechanical.Application.Message(
-    "Exported {} bolt results to {}".format(len(bolt_results), output_fname),
-    MessageSeverityType.Info,
-)
-ExtAPI.Application.Messages.Add(msg)
+
+run_bolt_calc_macro()
