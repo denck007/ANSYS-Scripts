@@ -547,9 +547,6 @@ def get_bolts_from_ui_beams():
         try:
             bolts.append(Bolt(ui_beam))
         except Exception as e:
-            print(
-                "Failed to make a bolt for '{}'. Got error: {}".format(ui_beam.Name, e)
-            )
             msg = Ansys.Mechanical.Application.Message(
                 "Failed to make a bolt for '{}'. Got error: {}".format(ui_beam.Name, e),
                 MessageSeverityType.Error,
@@ -594,16 +591,23 @@ def process_analsysis(analysis, bolts):
         # Data is returned as list (by time), want the 1st time
         #   which is the time we just scoped to
         elemental_nodal_forces = op_nodal.outputs.fields_container.GetData()[0]
-
         for bolt in bolts:
-            result = BoltResult(
-                bolt=bolt,
-                analysis=analysis,
-                mesh=mesh,
-                elemental_nodal_forces=elemental_nodal_forces,
-                analysis_time_step=step_end_time,
-            )
-            bolt_results_analysis.append(result)
+            try:
+                result = BoltResult(
+                    bolt=bolt,
+                    analysis=analysis,
+                    mesh=mesh,
+                    elemental_nodal_forces=elemental_nodal_forces,
+                    analysis_time_step=step_end_time,
+                )
+                bolt_results_analysis.append(result)
+            except Exception as e:
+                msg = Ansys.Mechanical.Application.Message(
+                    "Failed to process bolt '{}' in Analysis '{}'. Error: {}".format(bolt.ui_beam.Name, analysis.Name, e),
+                    MessageSeverityType.Warning
+                )
+                ExtAPI.Application.Messages.Add(msg)
+                continue
 
     return bolt_results_analysis
 
